@@ -24,14 +24,20 @@ const basicSampleRate beep.SampleRate = 44100
 const executableName = "gomusic"
 const helpString = "Usage: " + executableName + " [DIRECTORY]"
 
+// program pointer to send messages from other threads
 var program *tea.Program
 
+// Music track
 type track struct {
-	path      string
-	stream    beep.StreamSeekCloser
+	// path to track
+	path string
+	// stream struct
+	stream beep.StreamSeekCloser
+	// resampled track (to avoid bugs with playback speed)
 	resampled beep.Streamer
-	format    beep.Format
-	ended     bool
+	// track format
+	format beep.Format
+	ended  bool
 }
 
 var (
@@ -61,6 +67,7 @@ func loadTrack(trackPath string) (track, error) {
 		return track{}, errFileIsNotTrack
 	}
 
+	// currently supports mp3 only
 	streamer, format, err := mp3.Decode(f)
 	s.stream = streamer
 	s.format = format
@@ -71,36 +78,39 @@ func loadTrack(trackPath string) (track, error) {
 	return s, nil
 }
 
-type tracksQuery struct {
-	query              []track
-	ctrl               *beep.Ctrl
-	volume             effects.Volume
+type tracksQueue struct {
+	queue []track
+	// stream controller. allows to pause and resume tracks
+	ctrl *beep.Ctrl
+	// stream volume. allows to control volume
+	volume effects.Volume
+	// current track index in queue
 	currentTrack       int
 	speakerInitialized bool
 	// change of the volume in percents, for example 100 means current volume is 200%
 	volumeChange int
 }
 
-func newTrackQuery() *tracksQuery {
-	query := tracksQuery{
-		query: make([]track, 0),
+func newTrackQueue() *tracksQueue {
+	queue := tracksQueue{
+		queue: make([]track, 0),
 		ctrl:  &beep.Ctrl{},
 	}
-	query.volume = effects.Volume{
-		Streamer: query.ctrl,
+	queue.volume = effects.Volume{
+		Streamer: queue.ctrl,
 		Base:     10,
 		Volume:   0,
 		Silent:   false,
 	}
-	return &query
+	return &queue
 }
 
-func (s *tracksQuery) getTracks() []track {
-	return s.query
+func (s *tracksQueue) getTracks() []track {
+	return s.queue
 }
 
-func (s *tracksQuery) hasTrack(trackPath string) bool {
-	for _, track := range s.query {
+func (s *tracksQueue) hasTrack(trackPath string) bool {
+	for _, track := range s.queue {
 		if track.path == trackPath {
 			return true
 		}
@@ -108,25 +118,25 @@ func (s *tracksQuery) hasTrack(trackPath string) bool {
 	return false
 }
 
-func (s *tracksQuery) getCurrentTrack() (track, bool) {
+func (s *tracksQueue) getCurrentTrack() (track, bool) {
 	if s.len() == 0 {
 		return track{}, false
 	}
-	return s.query[s.currentTrack], true
+	return s.queue[s.currentTrack], true
 }
 
-func (s *tracksQuery) getCurrentTrackIndex() int {
+func (s *tracksQueue) getCurrentTrackIndex() int {
 	return s.currentTrack
 }
 
-func (s *tracksQuery) addTrack(track track) {
-	s.query = append(s.query, track)
+func (s *tracksQueue) addTrack(track track) {
+	s.queue = append(s.queue, track)
 	s.rebuildStreamer()
 }
 
-func (s *tracksQuery) rebuildStreamer() {
+func (s *tracksQueue) rebuildStreamer() {
 	streamers := make([]beep.Streamer, 0)
-	for _, track := range s.query {
+	for _, track := range s.queue {
 		if !track.ended {
 			seq := beep.Seq(track.resampled, beep.Callback(func() {
 				program.Send("f")
@@ -140,9 +150,9 @@ func (s *tracksQuery) rebuildStreamer() {
 	speaker.Unlock()
 }
 
-func (s *tracksQuery) nextTrack() {
+func (s *tracksQueue) nextTrack() {
 	if s.len() != 0 {
-		s.query[s.currentTrack].ended = true
+		s.queue[s.currentTrack].ended = true
 	}
 	if s.currentTrack+1 >= s.len() {
 		return
@@ -153,26 +163,26 @@ func (s *tracksQuery) nextTrack() {
 	s.play()
 }
 
-func (s *tracksQuery) prevTrack() {
+func (s *tracksQueue) prevTrack() {
 	if s.currentTrack-1 < 0 {
 		return
 	}
 	s.currentTrack -= 1
-	s.query[s.currentTrack].ended = false
+	s.queue[s.currentTrack].ended = false
 	s.rebuildStreamer()
 	speaker.Clear()
 	s.play()
 }
 
-func (s *tracksQuery) restartCurrentTrack() {
+func (s *tracksQueue) restartCurrentTrack() {
 	if s.len() == 0 {
 		return
 	}
 	s.restartTrack(s.currentTrack)
 }
 
-func (s *tracksQuery) restartTrack(index int) {
-	currentSong := &s.query[index]
+func (s *tracksQueue) restartTrack(index int) {
+	currentSong := &s.queue[index]
 	currentSong.ended = false
 	ended := currentSong.stream.Position() == currentSong.stream.Len()
 	currentSong.stream.Seek(0)
@@ -185,22 +195,22 @@ func (s *tracksQuery) restartTrack(index int) {
 	}
 }
 
-func (s *tracksQuery) restartQuery() {
-	for i := range s.query {
+func (s *tracksQueue) restartQueue() {
+	for i := range s.queue {
 		s.restartTrack(i)
 	}
 	s.currentTrack = 0
 	s.rebuildStreamer()
 }
 
-func (s *tracksQuery) play() {
+func (s *tracksQueue) play() {
 	speaker.Clear()
 	if s.len() != 0 {
 		speaker.Play(&s.volume)
 	}
 }
 
-func (s *tracksQuery) changeVolume(percents int) {
+func (s *tracksQueue) changeVolume(percents int) {
 	if s.volumeChange+percents < -100 {
 		return
 	}
@@ -215,34 +225,34 @@ func (s *tracksQuery) changeVolume(percents int) {
 	speaker.Play(&s.volume)
 }
 
-func (s tracksQuery) getVolumePercents() int {
+func (s tracksQueue) getVolumePercents() int {
 	return int(math.Round(100 * math.Pow(s.volume.Base, s.volume.Volume)))
 }
 
-func (s *tracksQuery) unpause() {
+func (s *tracksQueue) unpause() {
 	speaker.Lock()
 	s.ctrl.Paused = false
 	speaker.Unlock()
 }
 
-func (s *tracksQuery) len() int {
-	return len(s.query)
+func (s *tracksQueue) len() int {
+	return len(s.queue)
 }
 
-func (s *tracksQuery) pause() {
+func (s *tracksQueue) pause() {
 	speaker.Lock()
 	s.ctrl.Paused = true
 	speaker.Unlock()
 }
 
-func (s *tracksQuery) paused() bool {
+func (s *tracksQueue) paused() bool {
 	return s.ctrl.Paused
 }
 
-func (s *tracksQuery) removeTrack(trackName string) {
+func (s *tracksQueue) removeTrack(trackName string) {
 	trackIndex := -1
 	prev := 0
-	for i, track := range s.query {
+	for i, track := range s.queue {
 		if filepath.Base(track.path) == trackName {
 			trackIndex = i
 			break
@@ -253,25 +263,25 @@ func (s *tracksQuery) removeTrack(trackName string) {
 		return
 	}
 	s.currentTrack = prev
-	s.query = slices.Delete(s.query, trackIndex, trackIndex+1)
+	s.queue = slices.Delete(s.queue, trackIndex, trackIndex+1)
 }
 
-func (s *tracksQuery) clear() {
-	for _, track := range s.query {
+func (s *tracksQueue) clear() {
+	for _, track := range s.queue {
 		track.stream.Close()
 	}
 	speaker.Lock()
 	s.ctrl.Streamer = nil
 	speaker.Unlock()
 	s.currentTrack = 0
-	s.query = make([]track, 0)
+	s.queue = make([]track, 0)
 }
 
 type appState struct {
 	cursor      int
 	currentDir  string
 	choices     []string
-	tracksQuery tracksQuery
+	tracksQueue tracksQueue
 	showHelp    bool
 }
 
@@ -284,7 +294,7 @@ func (a appState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case string:
-		a.tracksQuery.nextTrack()
+		a.tracksQueue.nextTrack()
 	// Is it a key press?
 	case tea.KeyMsg:
 
@@ -302,12 +312,12 @@ func (a appState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.cursor--
 			}
 		case "r":
-			a.tracksQuery.restartCurrentTrack()
+			a.tracksQueue.restartCurrentTrack()
 		case "R":
-			a.tracksQuery.restartQuery()
+			a.tracksQueue.restartQueue()
 		case "d":
 			if len(a.choices) != 0 {
-				a.tracksQuery.removeTrack(a.choices[a.cursor])
+				a.tracksQueue.removeTrack(a.choices[a.cursor])
 			}
 		// The "down" and "j" keys move the cursor down
 		case "down", "j":
@@ -315,9 +325,9 @@ func (a appState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.cursor++
 			}
 		case "f":
-			a.tracksQuery.nextTrack()
+			a.tracksQueue.nextTrack()
 		case "F":
-			a.tracksQuery.prevTrack()
+			a.tracksQueue.prevTrack()
 		case "-":
 			a = a.goUpDir().updateChoices()
 		// The "enter" key and the spacebar (a literal space) toggle
@@ -327,7 +337,7 @@ func (a appState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			trackPath := filepath.Join(a.currentDir, a.choices[a.cursor])
-			if a.tracksQuery.hasTrack(trackPath) {
+			if a.tracksQueue.hasTrack(trackPath) {
 				break
 			}
 			track, err := loadTrack(trackPath)
@@ -342,26 +352,26 @@ func (a appState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				log.Println(err)
 				return a, tea.Quit
 			}
-			a.tracksQuery.addTrack(track)
-			a.tracksQuery.play()
+			a.tracksQueue.addTrack(track)
+			a.tracksQueue.play()
 			if a.cursor+1 < len(a.choices) {
 				a.cursor++
 			}
 		case "c":
-			a.tracksQuery.clear()
+			a.tracksQueue.clear()
 		case "p":
 			if len(a.choices) == 0 {
 				break
 			}
-			if a.tracksQuery.paused() {
-				a.tracksQuery.unpause()
+			if a.tracksQueue.paused() {
+				a.tracksQueue.unpause()
 			} else {
-				a.tracksQuery.pause()
+				a.tracksQueue.pause()
 			}
 		case "]":
-			a.tracksQuery.changeVolume(10)
+			a.tracksQueue.changeVolume(10)
 		case "[":
-			a.tracksQuery.changeVolume(-10)
+			a.tracksQueue.changeVolume(-10)
 		case "?":
 			a.showHelp = !a.showHelp
 		case "enter":
@@ -397,8 +407,8 @@ func (a appState) View() string {
 		return s
 	}
 	// The header
-	s := fmt.Sprintf("volume: %d", a.tracksQuery.getVolumePercents())
-	currentTrack, ok := a.tracksQuery.getCurrentTrack()
+	s := fmt.Sprintf("volume: %d", a.tracksQueue.getVolumePercents())
+	currentTrack, ok := a.tracksQueue.getCurrentTrack()
 	if ok {
 		s = fmt.Sprintf("%s, playing: %s\n \n", s, filepath.Base(currentTrack.path))
 	} else {
@@ -425,11 +435,11 @@ func (a appState) View() string {
 
 		// Is this choice selected?
 		checked := " " // not selected
-		for j, track := range a.tracksQuery.getTracks() {
+		for j, track := range a.tracksQueue.getTracks() {
 			if filepath.Base(track.path) != a.choices[i] {
 				continue
 			}
-			if j == a.tracksQuery.getCurrentTrackIndex() {
+			if j == a.tracksQueue.getCurrentTrackIndex() {
 				checked = "*"
 			} else {
 				checked = ">"
@@ -449,7 +459,7 @@ func (a appState) View() string {
 }
 
 func (a appState) releaseResources() {
-	a.tracksQuery.clear()
+	a.tracksQueue.clear()
 }
 
 func (a appState) exitError(err error) {
@@ -524,7 +534,7 @@ func main() {
 		cursor:      0,
 		currentDir:  directoryPath,
 		choices:     []string{},
-		tracksQuery: *newTrackQuery(),
+		tracksQueue: *newTrackQueue(),
 	}.updateChoices())
 	if _, err := program.Run(); err != nil {
 		fmt.Printf("%v", err)
