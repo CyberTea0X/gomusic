@@ -97,6 +97,7 @@ func newTrackQueue() *tracksQueue {
 		ctrl:  &beep.Ctrl{},
 	}
 	queue.volume = effects.Volume{
+		// see https://github.com/gopxl/beep/wiki/Hello,-Beep!
 		Streamer: queue.ctrl,
 		Base:     10,
 		Volume:   0,
@@ -134,6 +135,7 @@ func (s *tracksQueue) addTrack(track track) {
 	s.rebuildStreamer()
 }
 
+// rebuilds stream sequence
 func (s *tracksQueue) rebuildStreamer() {
 	streamers := make([]beep.Streamer, 0)
 	for _, track := range s.queue {
@@ -220,6 +222,8 @@ func (s *tracksQueue) changeVolume(percents int) {
 	} else {
 		s.volume.Silent = false
 	}
+	// s.volume.Volume is just a power of base number
+	// that's how we calculate needed volume for our percent
 	s.volume.Volume = math.Log10(100+float64(s.volumeChange)) - 2
 	speaker.Clear()
 	speaker.Play(&s.volume)
@@ -266,6 +270,7 @@ func (s *tracksQueue) removeTrack(trackName string) {
 	s.queue = slices.Delete(s.queue, trackIndex, trackIndex+1)
 }
 
+// releases all resources and cleans queue
 func (s *tracksQueue) clear() {
 	for _, track := range s.queue {
 		track.stream.Close()
