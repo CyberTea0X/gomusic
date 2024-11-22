@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"math"
@@ -26,6 +27,46 @@ const helpString = "Usage: " + executableName + " [DIRECTORY]"
 
 // program pointer to send messages from other threads
 var program *tea.Program
+
+func main() {
+	speaker.Init(basicSampleRate, basicSampleRate.N(time.Second/10))
+	var directoryPath string
+	var initialVolume int
+	curDir, err := os.Getwd()
+	if err != nil {
+		log.Fatal(err)
+	}
+	directoryPath = curDir
+	flag.IntVar(&initialVolume, "volume", 100, "set initial volume in percents(default 100)")
+	flag.Usage = func() {
+		fmt.Fprintln(os.Stderr, helpString)
+		fmt.Fprintln(os.Stderr, "Flags:")
+		flag.PrintDefaults()
+	}
+	flag.Parse()
+	args := flag.Args()
+	if len(args) != 0 {
+		directoryPath, err = filepath.Abs(args[0])
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	if slices.Contains(os.Args, "--help") {
+		fmt.Println(helpString)
+		os.Exit(0)
+	}
+	program = tea.NewProgram(appState{
+		cursor:      0,
+		currentDir:  directoryPath,
+		choices:     []string{},
+		tracksQueue: *newTrackQueue().withVolume(initialVolume),
+	}.updateChoices())
+	if _, err := program.Run(); err != nil {
+		fmt.Printf("%v", err)
+		os.Exit(1)
+	}
+}
 
 // Music track
 type track struct {
@@ -104,6 +145,11 @@ func newTrackQueue() *tracksQueue {
 		Silent:   false,
 	}
 	return &queue
+}
+
+func (q *tracksQueue) withVolume(volume int) *tracksQueue {
+	q.setVolume(volume)
+	return q
 }
 
 func (s *tracksQueue) getTracks() []track {
@@ -212,21 +258,24 @@ func (s *tracksQueue) play() {
 	}
 }
 
-func (s *tracksQueue) changeVolume(percents int) {
-	if s.volumeChange+percents < -100 {
-		return
+func (s *tracksQueue) setVolume(percents int) {
+	percents = percents - 100
+	if percents < -100 {
+		percents = -100
 	}
-	s.volumeChange += percents
+	s.volumeChange = percents
 	if s.volumeChange == -100 {
 		s.volume.Silent = true
 	} else {
 		s.volume.Silent = false
 	}
-	// s.volume.Volume is just a power of base number
-	// that's how we calculate needed volume for our percent
 	s.volume.Volume = math.Log10(100+float64(s.volumeChange)) - 2
 	speaker.Clear()
 	speaker.Play(&s.volume)
+}
+
+func (s *tracksQueue) changeVolume(percents int) {
+	s.setVolume(s.volumeChange + percents + 100)
 }
 
 func (s tracksQueue) getVolumePercents() int {
@@ -513,36 +562,4 @@ func (a appState) updateChoices() appState {
 	}
 	a.choices = choices
 	return a
-}
-
-func main() {
-	speaker.Init(basicSampleRate, basicSampleRate.N(time.Second/10))
-	var directoryPath string
-	if len(os.Args) == 1 {
-		curDir, err := os.Getwd()
-		if err != nil {
-			log.Fatal(err)
-		}
-		directoryPath = curDir
-	} else {
-		var err error
-		directoryPath, err = filepath.Abs(os.Args[1])
-		if err != nil {
-			log.Fatal("failed to resolve absolute path", err)
-		}
-	}
-	if slices.Contains(os.Args, "--help") {
-		fmt.Println(helpString)
-		os.Exit(0)
-	}
-	program = tea.NewProgram(appState{
-		cursor:      0,
-		currentDir:  directoryPath,
-		choices:     []string{},
-		tracksQueue: *newTrackQueue(),
-	}.updateChoices())
-	if _, err := program.Run(); err != nil {
-		fmt.Printf("%v", err)
-		os.Exit(1)
-	}
 }
